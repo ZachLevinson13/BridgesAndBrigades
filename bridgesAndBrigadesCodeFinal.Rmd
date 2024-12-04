@@ -1,0 +1,249 @@
+---
+title: "Zach Levinson Thesis Code"
+output: html_notebook
+---
+
+# Load necessary libraries
+library(MCMCpack)
+library(kableExtra)
+library(dplyr)
+library(readxl)
+
+set.seed(5)
+
+# Load the data
+d <- read_excel("[INSERT YOUR FILE LOCATION]", sheet = 1)
+
+row.names(d) <- d$countryYr
+
+# Convert categorical variables to ordered factors
+d$BRI <- ordered(as.factor(d$BRI))
+d$SCOmember <- ordered(as.factor(d$SCOmember))
+d$SCOobs <- ordered(as.factor(d$SCOobs))
+d$SCOdialogue <- ordered(as.factor(d$SCOdialogue))
+d$SCOstatus <- ordered(as.factor(d$SCOstatus))
+d$contiguity <- ordered(as.factor(d$contiguity))
+d$atopally <- ordered(as.factor(d$atopally))
+d$atopdefense <- ordered(as.factor(d$atopdefense))
+d$atopneutrality <- ordered(as.factor(d$atopneutrality))
+d$atopnonaggression <- ordered(as.factor(d$atopnonaggression))
+d$atopconsul <- ordered(as.factor(d$atopconsul))
+d$yr14 <- ordered(as.factor(d$yr14))
+d$yr15 <- ordered(as.factor(d$yr15))
+d$yr16 <- ordered(as.factor(d$yr16))
+d$yyr17 <- ordered(as.factor(d$yyr17))
+d$yr18 <- ordered(as.factor(d$yr18))
+
+# Soft Power Analysis
+postChiSoftPower <- MCMCmixfactanal(~ BRI + fdipctgdp + AdjustedAidAmount + yr14 + yr15 + yr16 + yyr17 + yr18, 
+                                    factors = 1, data = data, 
+                                    lambda.constraints = list(BRI = list(2, "+")), 
+                                    burnin = 2000, mcmc = 10000, thin = 50, 
+                                    verbose = 500, L0 = .25, 
+                                    store.lambda = TRUE, store.scores = TRUE, tune = 1.2)
+
+# Hard Power Analysis
+postChiHardPower <- MCMCmixfactanal(~ SCOstatus + sipriTIV + atopally + yr14 + yr15 + yr16 + yyr17 + yr18, 
+                                    factors = 1, data = data, 
+                                    lambda.constraints = list(SCOstatus = list(2, "+")), 
+                                    burnin = 2000, mcmc = 10000, thin = 50, 
+                                    verbose = 500, L0 = .25, 
+                                    store.lambda = TRUE, store.scores = TRUE, tune = 1.2)
+
+# Define a function to process MCMC results and extract λ1, λ0, and ψ
+processMcmcResults <- function(mcmcResult, variableNames) {
+  mcmcDf <- as.data.frame(mcmcResult)
+  mcmcDf <- t(mcmcDf)
+  
+  # Calculate summary statistics for each row (parameter)
+  quantiles <- apply(mcmcDf, 1, quantile, probs = c(0.025, 0.05, 0.5, 0.95, 0.975))
+  means <- apply(mcmcDf, 1, mean)
+  sds <- apply(mcmcDf, 1, sd)
+  
+  # Combine statistics into a single data frame
+  summaryDf <- cbind(t(quantiles), mean = means, sd = sds)
+  colnames(summaryDf) <- c("low95", "low90", "median", "high90", "high95", "mean", "sd")
+  
+  # Extract λ1 (factor loadings), λ0 (difficulty/intercept), and ψ (error variance) rows
+  lambda1 <- as.data.frame(summaryDf[grep("Lambda", rownames(summaryDf)), , drop = FALSE])   # λ1 values
+  lambda1 <- lambda1[1:length(variableNames), , drop = FALSE]
+  rownames(lambda1) <- variableNames
+  lambda1 <- lambda1 %>% mutate(Parameter = "λ1 (Factor Loading)")
+  
+  # Add λ0 placeholders if missing
+  lambda0 <- data.frame(
+    low95 = NA, low90 = NA, median = NA, high90 = NA, high95 = NA, mean = NA, sd = NA, 
+    Parameter = "λ0 (Difficulty)"
+  )
+  lambda0 <- lambda0[rep(1, length(variableNames)), ]
+  rownames(lambda0) <- variableNames
+  
+  # Extract ψ (error variance)
+  psi <- as.data.frame(summaryDf[grep("ErrorVar|psi", rownames(summaryDf), ignore.case = TRUE), , drop = FALSE])
+  psi <- psi %>% mutate(Parameter = "ψ (Error Variance)")
+  
+  # Combine λ1, λ0, and ψ results into a single data frame
+  resultDf <- rbind(lambda1, lambda0, psi)
+  
+  return(resultDf)
+}
+
+# Define variable names for each analysis
+softVariableNames <- c("BRI", "fdipctgdp", "AdjustedAidAmount", "yr14", "yr15", "yr16", "yyr17", "yr18")
+hardVariableNames <- c("SCOstatus", "sipriTIV", "atopally", "yr14", "yr15", "yr16", "yyr17", "yr18")
+
+# Process Soft Power and Hard Power results
+softResults <- processMcmcResults(postChiSoftPower, softVariableNames)
+hardResults <- processMcmcResults(postChiHardPower, hardVariableNames)
+
+# Combine and prepare for table output
+finalResults <- rbind(softResults, hardResults)
+
+# Format Mean to include SD in parentheses
+finalResults <- finalResults %>%
+  mutate(Mean_SD = paste0(round(mean, 3), " (", round(sd, 3), ")")) %>%
+  select(-mean, -sd)  # Remove separate Mean and SD columns
+
+# Format and print the table
+finalResults %>%
+  kbl(col.names = c("95% Low", "90% Low", "Median", "90% High", "95% High", "Mean (SD)", "Parameter"),
+      caption = "Effect of Component Variables on Overall Support Signaled") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "Confidence Intervals" = 5, "Estimates" = 1, " " = 1)) %>%
+  row_spec(0, bold = TRUE, color = "black", background = "#d3d3d3") %>%
+  pack_rows("Soft Power", 1, nrow(softResults), bold = TRUE, background = "#f7f7f7") %>%
+  pack_rows("Hard Power", nrow(softResults) + 1, nrow(finalResults), bold = TRUE, background = "#f0f0f0") %>%
+  column_spec(1:7, width = "1.5cm")
+  
+
+#FIGURES 1 & 2  
+# Load necessary libraries
+library(readxl)
+library(ggplot2)
+library(dplyr)
+
+# Define the path to the data file and extract the directory
+data_file_path <- "[INSERT YOUR FILE LOCATION]"
+output_directory <- dirname(data_file_path)
+
+# Load the dataset directly from Excel
+d <- read_excel(data_file_path)
+
+# Filter Soft Power and Hard Power data
+soft_power_data <- d %>%
+  select(countryYr, Median = medianSoft) %>%
+  mutate(Type = "Soft Power")
+
+hard_power_data <- d %>%
+  select(countryYr, Median = medianHard) %>%
+  mutate(Type = "Hard Power")
+
+# Handle cases with insufficient rows or identical Median values
+if (length(unique(hard_power_data$Median)) == 1) {
+  hard_power_data <- hard_power_data %>%
+    mutate(Median = Median + runif(nrow(hard_power_data), -0.01, 0.01))
+}
+
+# Select Top 10 and Bottom 10 for Soft Power
+soft_top_bottom <- soft_power_data %>%
+  arrange(Median) %>%
+  slice(c(1:min(10, n()), (n() - min(9, n() - 1)):n())) %>%
+  mutate(Rank = ifelse(row_number() <= 10, "Lowest 10", "Highest 10"))
+
+# Select Top 10 and Bottom 10 for Hard Power
+hard_top_bottom <- hard_power_data %>%
+  arrange(Median) %>%
+  slice(c(1:min(10, n()), (n() - min(9, n() - 1)):n())) %>%
+  mutate(Rank = ifelse(row_number() <= 10, "Lowest 10", "Highest 10"))
+
+# Generate separate charts for Soft Power and Hard Power
+soft_chart <- ggplot(soft_top_bottom, aes(x = Median, y = reorder(countryYr, Median), color = Rank)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Top and Bottom 10 Country-Years by Soft Power",
+    x = "Median Score",
+    y = "Country-Year"
+  )
+
+hard_chart <- ggplot(hard_top_bottom, aes(x = Median, y = reorder(countryYr, Median), color = Rank)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Top and Bottom 10 Country-Years by Hard Power",
+    x = "Median Score",
+    y = "Country-Year"
+  )
+
+# Save the charts as separate images in the same directory as the data file
+ggsave(filename = file.path(output_directory, "Soft_Power_Top_Bottom.png"), plot = soft_chart, width = 10, height = 6, dpi = 300)
+ggsave(filename = file.path(output_directory, "Hard_Power_Top_Bottom.png"), plot = hard_chart, width = 10, height = 6, dpi = 300)
+
+
+# Load necessary libraries
+library(kableExtra)
+library(dplyr)
+
+# Process Soft Power and Hard Power results
+softVariableNames <- c("BRI", "FDI Percentage of GDP", "Adjusted Aid Amount")
+hardVariableNames <- c("SCO Status", "SIPRI TIV", "ATOP Ally")
+
+# Extract results using the processMcmcResults function
+softResults <- processMcmcResults(postChiSoftPower, softVariableNames)
+hardResults <- processMcmcResults(postChiHardPower, hardVariableNames)
+
+# Extract λ1, λ0, and ψ for Soft Power
+soft_l1 <- softResults %>% filter(Parameter == "λ1 (Factor Loading)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+soft_l0 <- softResults %>% filter(Parameter == "λ0 (Difficulty)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+soft_psi <- softResults %>% filter(Parameter == "ψ (Error Variance)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+
+# Extract λ1, λ0, and ψ for Hard Power
+hard_l1 <- hardResults %>% filter(Parameter == "λ1 (Factor Loading)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+hard_l0 <- hardResults %>% filter(Parameter == "λ0 (Difficulty)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+hard_psi <- hardResults %>% filter(Parameter == "ψ (Error Variance)") %>%
+  mutate(Value = paste0(round(median, 3), " (", round(sd, 3), ")"))
+
+# Combine results into separate data frames for Soft Power and Hard Power
+soft_table <- data.frame(
+  Metric = c("λ1", "λ0", "ψ"),
+  BRI = c(soft_l1$Value[1], soft_l0$Value[1], soft_psi$Value[1]),
+  `FDI Percentage of GDP` = c(soft_l1$Value[2], soft_l0$Value[2], soft_psi$Value[2]),
+  `Adjusted Aid Amount` = c(soft_l1$Value[3], soft_l0$Value[3], soft_psi$Value[3])
+)
+
+hard_table <- data.frame(
+  Metric = c("λ1", "λ0", "ψ"),
+  `SCO Status` = c(hard_l1$Value[1], hard_l0$Value[1], hard_psi$Value[1]),
+  `SIPRI TIV` = c(hard_l1$Value[2], hard_l0$Value[2], hard_psi$Value[2]),
+  `ATOP Ally` = c(hard_l1$Value[3], hard_l0$Value[3], hard_psi$Value[3])
+)
+
+# Create and style the tables
+soft_table_html <- soft_table %>%
+  kbl(
+    col.names = c("Metric", "BRI", "FDI Percentage of GDP", "Adjusted Aid Amount"),
+    caption = "Effect of Soft Power Variables on Overall Support Signaled"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+hard_table_html <- hard_table %>%
+  kbl(
+    col.names = c("Metric", "SCO Status", "SIPRI TIV", "ATOP Ally"),
+    caption = "Effect of Hard Power Variables on Overall Support Signaled"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+# Save the tables as a combined HTML file
+output_directory <- dirname(data_file_path)
+html_file_path <- file.path(output_directory, "Effect_of_Component_Variables.html")
+
+save_kable(list(soft_table_html, hard_table_html), file = html_file_path)
+
+# Optionally display the tables in the RStudio viewer
+soft_table_html
+hard_table_html
